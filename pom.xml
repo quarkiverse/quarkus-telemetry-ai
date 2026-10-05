@@ -47,7 +47,7 @@
         <!-- Quarkus -->
         <quarkus.platform.group-id>io.quarkus</quarkus.platform.group-id>
         <quarkus.platform.artifact-id>quarkus-bom</quarkus.platform.artifact-id>
-        <quarkus.platform.version>3.39.4</quarkus.platform.version>
+        <quarkus.platform.version>3.40.1</quarkus.platform.version>
 
         <!-- LangChain4j directly, when needed -->
         <quarkus.langchain4j.version>1.13.3</quarkus.langchain4j.version>
