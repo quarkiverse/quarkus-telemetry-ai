@@ -4,24 +4,25 @@
 
 * JDK 21+
 * Maven 3.9+ (or use the included `mvnw` wrapper)
-* Docker (for LGTM stack and DB tests)
+* Docker (for LGTM stack via Dev Services)
+* https://docs.astral.sh/uv/[uvx] -- used to run the `mcp-grafana` MCP server (`pip install uv` or `brew install uv`)
 * API key for at least one LLM provider (OpenAI or Grok)
 
 == Quick Start
 
-Start the three modules in separate terminals. The proxy must start first so other modules share the same LGTM DevServices container.
+The fastest way to get started is running the AI module in dev mode. Quarkus Dev Services automatically starts an LGTM stack -- no manual setup needed:
 
 [source,bash]
 ----
-# Terminal 1: Start proxy (launches LGTM DevServices)
-./mvn.proxy.sh quarkus:dev
+git clone https://github.com/quarkiverse/quarkus-telemetry-ai.git
+cd quarkus-telemetry-ai
 
-# Terminal 2: Start app (wait for proxy to fully start)
-./mvn.app.sh quarkus:dev
+export OPENAI_API_KEY=sk-...   # or GROK_API_KEY for Grok
 
-# Terminal 3: Start AI module
-./mvn.ai.sh quarkus:dev
+./dev-ai.sh 8081,8082
 ----
+
+The `app.ports` argument tells the AI module which of your application ports to connect to for source examination and dashboard generation via Dev MCP.
 
 === LLM Provider Selection
 
@@ -29,9 +30,10 @@ The AI module uses Maven profiles to select the LLM provider:
 
 [source,bash]
 ----
-./mvn.ai.sh quarkus:dev           # OpenAI (default)
-./mvn.ai.sh quarkus:dev -Pgrok    # Grok/xAI
-./mvn.ai.sh quarkus:dev -Pgemini  # Gemini
+./mvn.ai.sh quarkus:dev              # OpenAI (default)
+./mvn.ai.sh quarkus:dev -Pgrok       # Grok/xAI
+./mvn.ai.sh quarkus:dev -Pgemini     # Gemini
+./mvn.ai.sh quarkus:dev -Pwatsonx    # WatsonX
 ----
 
 === Environment Variables
@@ -43,42 +45,89 @@ Set the API key for your chosen provider:
 export OPENAI_API_KEY=sk-...
 export GROK_API_KEY=xai-...
 export GEMINI_API_KEY=...
-----
-
-== Generate Traffic
-
-Poke the proxy app to generate traces:
-
-[source,bash]
-----
-curl http://localhost:8081/poke?value=200    # healthy request
-curl http://localhost:8081/poke?value=500    # error request
-curl http://localhost:8081/chaos?type=delay&intensity=3000  # 3s delay
+export WATSONX_API_KEY=...
 ----
 
 == Analyze
 
-Open the Web UI at http://localhost:8080 or call the API directly:
+Once the AI module and your applications are running and generating telemetry, open the Web UI at http://localhost:8080 or call the API directly:
 
 [source,bash]
 ----
 curl http://localhost:8080/analyze/5   # analyze last 5 traces
 ----
 
+== Production Mode (Uber-jar)
+
+For connecting to an existing LGTM instance without dev mode, use the pre-built uber-jar:
+
+[source,bash]
+----
+# Build locally
+./mvn.ai.sh package -DskipTests
+
+# Run with existing LGTM
+./run-ai.sh 8081,8082 http://localhost:3000 http://localhost:3200
+----
+
+The uber-jar is also published to Maven Central:
+
+[source]
+----
+io.quarkiverse.telemetry:telemetry-ai-core:<version>:jar:runner
+----
+
 == Manual LGTM (without DevServices)
 
-To connect to an externally started LGTM stack:
+To connect to an externally started LGTM stack instead of using Dev Services:
 
 [source,bash]
 ----
 docker run -p 3000:3000 -p 4317:4317 -p 4318:4318 -p 3200:3200 grafana/otel-lgtm:0.24.0
 ----
 
-Then run each app with the `lgtm` profile:
+Then run the AI module with the `lgtm` profile:
 
 [source,bash]
 ----
-./mvn.proxy.sh quarkus:dev -Dquarkus.profile=lgtm
-./mvn.app.sh quarkus:dev -Dquarkus.profile=lgtm
 ./mvn.ai.sh quarkus:dev -Dquarkus.profile=lgtm,openai
 ----
+
+== Trying It with Example Apps
+
+The project includes companion modules (`proxy`, `app`, `ext`) that simulate distributed microservices with configurable chaos failure modes. These are useful for trying out the AI analysis without instrumenting your own applications:
+
+[source,bash]
+----
+# Terminal 1: Start proxy (launches shared LGTM DevServices)
+./mvn.proxy.sh quarkus:dev
+
+# Terminal 2: Start app (wait for proxy to fully start)
+./mvn.app.sh quarkus:dev
+
+# Terminal 3: Start AI module
+./dev-ai.sh 8081,8082
+----
+
+Generate traces by poking the proxy: `curl http://localhost:8081/poke?value=500`
+
+See xref:integration-testing.adoc[Integration Testing] for the full catalog of chaos scenarios these apps support.
+
+== Scripts Reference
+
+[cols="1,2"]
+|===
+| Script | Purpose
+
+| `./dev-ai.sh <ports>`
+| Start AI module in dev mode with Dev Services (LGTM auto-starts)
+
+| `./run-ai.sh <ports> <grafana-url> <tempo-url>`
+| Run AI module uber-jar against existing LGTM
+
+| `./mvn.ai.sh <goals>`
+| Build/run the AI module with Maven
+
+| `./run-lgtm.sh [ports]`
+| Start LGTM and the AI module together
+|===

@@ -8,43 +8,66 @@ Telemetry AI is a Quarkus-based system that uses LLMs to automatically analyze d
 
 == Architecture
 
-----
-User (browser / curl)
-       |
-  localhost:8080        localhost:8081        localhost:8082
-       |                     |                     |
-  +----v-----+         +-----v-----+         +-----v-----+
-  | AI Module|         |   Proxy   | ------> |    App    |
-  | analyze  |         |  forward  |  REST   |  poke/    |
-  | Web UI   |         |  requests |  client |  chaos    |
-  +----+-----+         +-----------+         +-----------+
-       |                     |                     |
-       |              OpenTelemetry spans, logs, metrics
-       |                     |                     v
-       v                     v               +-----v-----+
-  +----------+         +------------------+  |    DB     |
-  | LLM      |         | LGTM Stack       |  |  MySQL    |
-  | (OpenAI, |         | Tempo | Loki     |  |  Toxiproxy|
-  |  Grok,   |         | Prometheus       |  +-----------+
-  |  Gemini) |         +------------------+
-  +----------+
-----
+[mermaid]
+....
+flowchart LR
+User[User]
+AI[AI Module]
+subgraph YourApps[Your Applications]
+App1[App 1]
+App2[App 2]
+end
+subgraph LGTM[LGTM Stack]
+Tempo[Tempo]
+Loki[Loki]
+Prom[Prometheus]
+end
+subgraph LLMs[LLM Providers]
+OpenAI[OpenAI]
+Grok[Grok]
+Gemini[Gemini]
+WatsonX[WatsonX]
+end
+User --> AI
+YourApps -.->|OTel| LGTM
+Tempo <-->|MCP| AI
+Loki <-->|MCP| AI
+Prom <-->|MCP| AI
+AI <-->|Dev MCP| YourApps
+AI -->|LangChain4j| LLMs
+style AI fill:#3498db,color:#fff
+style YourApps fill:#f5f5f5,stroke:#2ecc71
+style LGTM fill:#f5f5f5,stroke:#bbb
+style LLMs fill:#f5f5f5,stroke:#bbb
+....
 
-=== Modules
+The AI module connects to your existing LGTM stack via MCP and to your running Quarkus applications via Dev MCP (for source examination and dashboard generation). Your applications just need OpenTelemetry instrumentation -- no code changes required.
 
-* **ai** (port 8080) -- Core analysis engine with Web UI, LLM integration, MCP telemetry access
-* **proxy** (port 8081) -- Forwards requests to app, creates distributed trace chain
-* **app** (port 8082) -- Synthetic application with 11 configurable chaos failure modes
-* **db** (port 8083) -- Database-backed application with JPA/Panache, MySQL via Toxiproxy for infrastructure chaos
+The AI module is available as an uber-jar on Maven Central (`io.quarkiverse.telemetry:telemetry-ai-core:<version>:jar:runner`).
 
 == Analysis Pipeline
 
-1. User triggers analysis via `GET /analyze/{n}` (n = number of traces)
-2. AI module sends system prompt and tools to the LLM
-3. LLM iterates over traces, retrieving trace data and logs from LGTM via MCP
-4. LLM queries Prometheus metrics for the trace time window
-5. LLM produces a structured root-cause analysis report
-6. Optionally: source code examination and Grafana dashboard generation via Dev MCP
+[mermaid]
+....
+sequenceDiagram
+participant U as User
+participant AI as AI Module
+participant Strip as StripMcpClient
+participant LGTM as LGTM
+participant LLM as LLM
+U->>AI: GET /analyze/n
+AI->>LLM: System prompt + tools
+loop Per-trace investigation
+LLM->>LGTM: Get trace + logs
+LGTM-->>Strip: Raw data
+Strip-->>LLM: Stripped data
+end
+LLM->>LGTM: Get metrics
+LGTM-->>Strip: Raw metrics
+Strip-->>LLM: Filtered metrics
+LLM-->>AI: Analysis report
+AI-->>U: HTML / Markdown / Text
+....
 
 == LLM Providers
 

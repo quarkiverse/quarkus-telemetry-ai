@@ -75,17 +75,9 @@ quarkus.langchain4j.mcp.grafana.command=uvx,mcp-grafana
 quarkus.langchain4j.mcp.grafana.environment.GRAFANA_URL=${grafana.endpoint}
 ----
 
-== Application Ports
+== Application Port
 
-[cols="1,1"]
-|===
-| Module | Port
-
-| AI | 8080
-| Proxy | 8081
-| App | 8082
-| DB | 8083
-|===
+The AI module runs on port 8080 by default. The `app.ports` property configures which of your application ports to connect to via Dev MCP for source examination and dashboard generation.
 
 == LGTM Profile
 

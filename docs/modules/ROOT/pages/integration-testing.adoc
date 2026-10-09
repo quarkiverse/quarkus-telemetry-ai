@@ -73,6 +73,14 @@ Pass an empty string `''` for scorer to use the default (openai).
 
 DB tests use Toxiproxy for infrastructure-level chaos injection:
 
+[mermaid]
+....
+flowchart LR
+App[Ext App] -->|JDBC| Toxi[Toxiproxy :33061]
+Toxi -->|JDBC| DB[(MySQL :33060)]
+style Toxi fill:#fdd,stroke:#c33
+....
+
 [cols="1,2,3"]
 |===
 | # | Method | What It Tests
@@ -86,6 +94,14 @@ DB tests use Toxiproxy for infrastructure-level chaos injection:
 == Weather Test Scenarios
 
 Weather tests use Toxiproxy to inject chaos on the external Open-Meteo weather API connection:
+
+[mermaid]
+....
+flowchart LR
+App[Ext App] -->|REST| Toxi[Toxiproxy :8888]
+Toxi -->|REST| API[api.open-meteo.com]
+style Toxi fill:#fdd,stroke:#c33
+....
 
 [cols="1,2,3"]
 |===
@@ -116,6 +132,39 @@ The app module supports 11 chaos types via `GET /chaos?type={type}&intensity={va
 | `intermittent` | Random failures at configurable rate
 | `deadlock` | Two threads deadlocked on competing locks
 |===
+
+== Evaluation Pipeline
+
+Each test uses an LLM-as-judge approach: a scorer LLM evaluates the analysis produced by the AI provider LLM.
+
+[mermaid]
+....
+sequenceDiagram
+participant Test as Test Case
+participant App as Companion App
+participant AI as AI Module
+participant Scorer as Scorer LLM
+Test->>App: Inject chaos
+Note over Test: Wait for telemetry ingestion
+Test->>AI: GET /analyze/n
+AI-->>Test: Analysis + captured tool outputs
+Test->>Scorer: Evaluate analysis against telemetry data
+Scorer-->>Test: Score (0-100) + prompt suggestions
+Note over Test: Assert score >= 70
+....
+
+The scorer evaluates on four dimensions (each 0-25 points): *completeness*, *accuracy*, *correlation quality*, and *actionability*. If the score falls below 70, the scorer also outputs concrete prompt improvement suggestions for the system prompt.
+
+=== Cross-LLM Combinations
+
+The analyzer LLM and scorer LLM can be different providers, preventing self-evaluation bias:
+
+[source,bash]
+----
+./run-integration-test.sh chaos openai grok     # AI=OpenAI, scorer=Grok
+./run-integration-test.sh chaos grok openai     # AI=Grok, scorer=OpenAI
+./run-all-integration-tests.sh chaos            # all 4 combinations
+----
 
 == Environment Variables
 

@@ -30,10 +30,9 @@ The system has a layered architecture connecting monitored applications to the A
 flowchart LR
 User[User]
 AI[AI Module]
-subgraph Apps[Quarkus Microservices]
+subgraph YourApps[Your Applications]
 App1[App 1]
 App2[App 2]
-App3[App 3]
 end
 subgraph LGTM[LGTM Stack]
 Tempo[Tempo]
@@ -47,20 +46,19 @@ Gemini[Gemini]
 WatsonX[WatsonX]
 end
 User --> AI
-User --> App1
-App1 -->|REST| App2
-App2 -->|REST| App3
-Apps -.->|OTel| LGTM
+YourApps -.->|OTel| LGTM
 Tempo <-->|MCP| AI
 Loki <-->|MCP| AI
 Prom <-->|MCP| AI
-AI <-->|Dev MCP| Apps
+AI <-->|Dev MCP| YourApps
 AI -->|LangChain4j| LLMs
 style AI fill:#3498db,color:#fff
-style Apps fill:#f5f5f5,stroke:#2ecc71
+style YourApps fill:#f5f5f5,stroke:#2ecc71
 style LGTM fill:#f5f5f5,stroke:#bbb
 style LLMs fill:#f5f5f5,stroke:#bbb
 ```
+
+Your applications just need OpenTelemetry instrumentation — no code changes required. The AI module connects to your existing LGTM stack via MCP and optionally to your running Quarkus applications via Dev MCP for source examination and dashboard generation.
 
 The AI module uses [LangChain4j](https://docs.langchain4j.dev/) `@RegisterAiService` interfaces backed by a ~290-line system prompt that instructs the LLM on three-way telemetry correlation, chaos detection patterns, severity classification, and structured output formatting.
 
@@ -124,17 +122,7 @@ export OPENAI_API_KEY=sk-...   # or GROK_API_KEY for Grok
 ./dev-ai.sh 8081,8082
 ```
 
-Dev Services automatically starts a Grafana LGTM container (Tempo, Loki, Prometheus) — no Docker Compose or manual setup needed. The `app.ports` argument tells the AI module which companion app ports to connect to for source examination and dashboard generation via Dev MCP.
-
-For the full experience with companion apps generating telemetry:
-
-```bash
-./mvn.proxy.sh quarkus:dev          # Terminal 1: proxy on :8081
-./mvn.app.sh quarkus:dev            # Terminal 2: app on :8082
-./dev-ai.sh 8081,8082               # Terminal 3: AI on :8080
-```
-
-Then poke the proxy to generate traces: `curl http://localhost:8081/poke?value=500`
+Dev Services automatically starts a Grafana LGTM container (Tempo, Loki, Prometheus) — no Docker Compose or manual setup needed. The `app.ports` argument tells the AI module which of your application ports to connect to for source examination and dashboard generation via Dev MCP.
 
 ### Production Mode (Existing LGTM)
 
@@ -196,7 +184,7 @@ How do you test an AI-powered analysis tool? You need realistic failure scenario
 
 ### Chaos Scenarios
 
-The companion `app` module exposes 11 chaos types via `GET /chaos?type={type}&intensity={value}`:
+The project includes companion test applications that simulate distributed microservices with configurable chaos failure modes. These expose 11 chaos types via `GET /chaos?type={type}&intensity={value}`:
 
 | Chaos Type | What It Does |
 |-----------|-------------|
@@ -214,27 +202,37 @@ The companion `app` module exposes 11 chaos types via `GET /chaos?type={type}&in
 
 ### Database and Weather Chaos
 
-Beyond application-level chaos, the `ext` module tests infrastructure-level failures using **Toxiproxy** — a TCP proxy that can inject latency, cut connections, and throttle bandwidth at the network layer:
+Beyond application-level chaos, the test suite also covers infrastructure-level failures using **Toxiproxy** — a TCP proxy that can inject latency, cut connections, and throttle bandwidth at the network layer:
 
 **Database chaos** routes JDBC connections through Toxiproxy to MySQL:
-```
-App → Toxiproxy (:33061) → MySQL (:33060)
-```
-Tests include slow queries (3s latency injection), connection pool exhaustion (4s latency + small pool + concurrent requests), and full database outages (connection cut). JDBC telemetry (`quarkus.datasource.jdbc.telemetry=true`) creates separate database query spans, so the AI sees `GET /poke (3019ms) → SELECT ... (3015ms)` and can identify database-level root causes.
 
-**Weather chaos** routes REST client calls through Toxiproxy to the Open-Meteo API:
+```mermaid
+flowchart LR
+App[Test App] -->|JDBC| Toxi[Toxiproxy]
+Toxi -->|JDBC| DB[(MySQL)]
+style Toxi fill:#fdd,stroke:#c33
 ```
-App → Toxiproxy (:8888) → api.open-meteo.com
-```
-Tests include slow external API responses and full API outages. REST client instrumentation by `quarkus-opentelemetry` creates spans automatically — no extra configuration needed.
 
-No application code changes are required for any of these — chaos is injected purely at the network layer via the Toxiproxy REST API.
+Tests include slow queries (3s latency injection), connection pool exhaustion (4s latency + small pool + concurrent requests), and full database outages (connection cut). JDBC telemetry creates separate database query spans, so the AI sees `GET /poke (3019ms) → SELECT ... (3015ms)` and can identify database-level root causes.
+
+**Weather API chaos** routes REST client calls through Toxiproxy to an external API:
+
+```mermaid
+flowchart LR
+App[Test App] -->|REST| Toxi[Toxiproxy]
+Toxi -->|REST| API[External API]
+style Toxi fill:#fdd,stroke:#c33
+```
+
+Tests include slow external API responses and full API outages.
+
+No application code changes are required — chaos is injected purely at the network layer via the Toxiproxy REST API.
 
 ### The Evaluation Mechanism: LLM-as-Judge
 
 Each integration test follows the same pattern:
 
-1. **Inject chaos** into the companion app (or do nothing for baseline tests)
+1. **Inject chaos** into the test application (or do nothing for baseline tests)
 2. **Wait** for telemetry to propagate to LGTM
 3. **Run analysis** via `GET /analyze/{n}`
 4. **Capture** all tool outputs (raw telemetry data the LLM saw)
@@ -301,6 +299,6 @@ Telemetry AI is a [Quarkiverse project](https://github.com/quarkiverse/quarkus-t
 - **Additional LLM providers** (Gemini and WatsonX integration testing)
 - **Community feedback** on analysis quality and usefulness across different application architectures
 
-The project is designed for extensibility — adding a new LLM provider is a Maven profile + Quarkus configuration, adding new chaos types is a method in the chaos endpoint, and the evaluation framework automatically validates any changes against the full test matrix.
+The project is designed for extensibility — adding a new LLM provider is a Maven profile + Quarkus configuration, adding new chaos types is a method in the test application's chaos endpoint, and the evaluation framework automatically validates any changes against the full test matrix.
 
 Try it out: clone the repo, set an API key, run `./dev-ai.sh 8081,8082`, poke some endpoints, and see what the AI finds.
