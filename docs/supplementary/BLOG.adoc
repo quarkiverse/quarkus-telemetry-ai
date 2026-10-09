@@ -1,0 +1,364 @@
+= Telemetry AI: LLM-Powered Root-Cause Analysis for Distributed Systems
+
+When something goes wrong in a distributed system, engineers face the same ritual: open Grafana, dig through traces in Tempo, correlate logs in Loki, check Prometheus metrics, and mentally piece together a causal chain across services. What if an LLM could do that for you -- pulling telemetry from the same tools you already use and producing a structured root-cause analysis in seconds?
+
+That's what *Telemetry AI* does. It's an open-source Quarkus application that connects to your existing Grafana LGTM stack via MCP (Model Context Protocol), feeds correlated traces, logs, and metrics to an LLM, and returns actionable analysis -- complete with root causes, severity assessments, and remediation suggestions.
+
+This post walks through how it works, how to run it, and how we test it using chaos engineering with LLM-as-judge evaluation.
+
+== What It Does
+
+Telemetry AI is a standalone analysis engine. Point it at your LGTM stack and your running applications, and it will:
+
+* *Retrieve recent traces* from Tempo via MCP and identify the interesting ones (errors, high latency, unusual patterns)
+* *Correlate logs* for each trace from Loki, linking log entries to specific spans
+* *Pull Prometheus metrics* at the time window of each trace to add system-level context
+* *Analyze everything together* using an LLM, producing a structured report that distinguishes root causes from symptoms, identifies cascading failures, and suggests next steps
+
+Optionally, it can also:
+
+* *Examine source code* of monitored applications via Dev MCP, correlating analysis findings back to specific code paths
+* *Generate Grafana dashboards* tailored to the issues it found, saved directly into each application's workspace
+
+The key insight is the data pipeline. Raw telemetry from MCP is noisy -- SDK metadata, localhost attributes, histogram buckets, Netty internals, per-region breakdowns. A `StripMcpClient` decorator filters this aggressively (94% reduction on metrics: 586 entries down to ~35) before it reaches the LLM, keeping the context window focused on signals that matter.
+
+== Architecture
+
+The system has a layered architecture connecting monitored applications to the AI analysis engine through an observability stack:
+
+[mermaid]
+....
+flowchart LR
+User[User]
+AI[AI Module]
+subgraph Apps[Quarkus Microservices]
+App1[App 1]
+App2[App 2]
+App3[App 3]
+end
+subgraph LGTM[LGTM Stack]
+Tempo[Tempo]
+Loki[Loki]
+Prom[Prometheus]
+end
+subgraph LLMs[LLM Providers]
+OpenAI[OpenAI]
+Grok[Grok]
+Gemini[Gemini]
+WatsonX[WatsonX]
+end
+User --> AI
+User --> App1
+App1 -->|REST| App2
+App2 -->|REST| App3
+Apps -.->|OTel| LGTM
+Tempo <-->|MCP| AI
+Loki <-->|MCP| AI
+Prom <-->|MCP| AI
+AI <-->|Dev MCP| Apps
+AI -->|LangChain4j| LLMs
+style AI fill:#3498db,color:#fff
+style Apps fill:#f5f5f5,stroke:#2ecc71
+style LGTM fill:#f5f5f5,stroke:#bbb
+style LLMs fill:#f5f5f5,stroke:#bbb
+....
+
+The AI module uses https://docs.langchain4j.dev/[LangChain4j] `@RegisterAiService` interfaces backed by a ~290-line system prompt that instructs the LLM on three-way telemetry correlation, chaos detection patterns, severity classification, and structured output formatting.
+
+Five tools are exposed to the LLM during analysis:
+
+[cols="1,2", options="header"]
+|===
+| Tool | What It Provides
+
+| `provideLastNTraceIds`
+| Recent trace IDs from Tempo (TraceQL)
+
+| `traceById`
+| Full trace data for a specific trace
+
+| `logsWithTraceId`
+| Correlated Loki logs for a trace
+
+| `getRootSpanStartTime`
+| Timestamp for metric queries
+
+| `getAllMetricsForDatetime`
+| Prometheus metrics at a point in time
+|===
+
+The LLM orchestrates these tools autonomously -- it decides which traces look interesting, pulls their logs, checks metrics, and builds the analysis iteratively.
+
+== The Analysis Pipeline
+
+When you hit `GET /analyze/\{n}`, the following sequence unfolds:
+
+. *Tool dispatch* -- The AI module sends the system prompt and tool definitions to the LLM
+. *Trace retrieval* -- The LLM calls `provideLastNTraceIds` to get the N most recent traces
+. *Per-trace investigation* -- For each trace, the LLM pulls full trace data and correlated logs through `StripMcpClient`, which strips SDK noise, localhost attributes, and redundant fields
+. *Metrics context* -- The LLM queries Prometheus metrics at the root span's start time; the filtering layer removes Netty/OTel internals, static counters, and histogram bucket breakdowns
+. *Analysis synthesis* -- The LLM produces a structured report with per-trace sections covering root cause, slowest operations, error patterns, and cross-trace correlation
+
+If source examination or dashboard generation is enabled, a post-analysis pipeline kicks in using `DevMcpAiService` -- a separate `@RegisterAiService` that uses Dev MCP tools to read application source code and write Grafana dashboard JSON back to each workspace.
+
+[mermaid]
+....
+sequenceDiagram
+participant U as User
+participant AI as AI Module
+participant Strip as StripMcpClient
+participant LGTM as LGTM
+participant LLM as LLM
+U->>AI: GET /analyze/n
+AI->>LLM: System prompt + tools
+loop Per-trace investigation
+LLM->>LGTM: provideLastNTraceIds / traceById
+LGTM-->>Strip: Raw trace data
+Strip-->>LLM: Stripped trace data
+LLM->>LGTM: logsWithTraceId
+LGTM-->>Strip: Raw logs
+Strip-->>LLM: Stripped logs
+end
+LLM->>LGTM: getAllMetricsForDatetime
+LGTM-->>Strip: Raw metrics (586 entries)
+Strip-->>LLM: Filtered metrics (~35 entries)
+LLM-->>AI: Analysis report
+AI-->>U: HTML / Markdown / Text
+rect rgb(240, 240, 255)
+Note over AI,LLM: Post-Analysis (optional)
+AI->>LLM: examineSource(analysis)
+LLM-->>AI: Source examination report
+AI->>LLM: createDashboard(analysis)
+LLM-->>AI: Dashboard JSON
+end
+....
+
+== Running It
+
+=== Dev Mode (Recommended for Getting Started)
+
+The easiest way to try Telemetry AI is dev mode, which auto-starts an LGTM stack via Quarkus Dev Services:
+
+[source,bash]
+----
+git clone https://github.com/quarkiverse/quarkus-telemetry-ai.git
+cd quarkus-telemetry-ai
+
+export OPENAI_API_KEY=sk-...   # or GROK_API_KEY for Grok
+
+# Start the AI module pointing at companion app ports
+./dev-ai.sh 8081,8082
+----
+
+Dev Services automatically starts a Grafana LGTM container (Tempo, Loki, Prometheus) -- no Docker Compose or manual setup needed. The `app.ports` argument tells the AI module which companion app ports to connect to for source examination and dashboard generation via Dev MCP.
+
+For the full experience with companion apps generating telemetry:
+
+[source,bash]
+----
+./mvn.proxy.sh quarkus:dev          # Terminal 1: proxy on :8081
+./mvn.app.sh quarkus:dev            # Terminal 2: app on :8082
+./dev-ai.sh 8081,8082               # Terminal 3: AI on :8080
+----
+
+Then poke the proxy to generate traces: `curl http://localhost:8081/poke?value=500`
+
+=== Production Mode (Existing LGTM)
+
+For connecting to an existing LGTM instance, use the pre-built uber-jar:
+
+[source,bash]
+----
+# Build
+./mvn.ai.sh package -DskipTests
+
+# Run
+./run-ai.sh 8081,8082 http://localhost:3000 http://localhost:3200
+----
+
+The uber-jar is also published to Maven Central as `io.quarkiverse.telemetry:telemetry-ai-core:<version>:jar:runner`.
+
+=== LLM Provider Selection
+
+Telemetry AI supports multiple LLM providers via Maven/Quarkus profiles:
+
+[source,bash]
+----
+./mvn.ai.sh quarkus:dev              # OpenAI (default, gpt-4o-mini)
+./mvn.ai.sh quarkus:dev -Pgrok       # Grok/xAI (grok-3-mini)
+./mvn.ai.sh quarkus:dev -Pgemini     # Gemini
+./mvn.ai.sh quarkus:dev -Pwatsonx    # WatsonX (Granite)
+----
+
+Each profile activates the corresponding LangChain4j extension and Quarkus configuration. Grok uses the OpenAI-compatible API at `https://api.x.ai/v1`.
+
+== The Web UI
+
+Open `http://localhost:8080` to access the analysis UI:
+
+image::images/screenshot-analysis-ui.png[Telemetry AI Analysis UI]
+
+The interface provides:
+
+* *Traces* -- number of recent traces to analyze (1-20)
+* *Output Format* -- HTML, Markdown, Plain Text, or AsciiDoc
+* *Examine Source* -- include source code examination via Dev MCP
+* *Create Dashboard* -- generate a Grafana dashboard JSON from findings
+
+After clicking *Analyze*, the UI shows a performance stats bar (duration, LLM calls, input/output tokens) and three collapsible result sections:
+
+. *Analysis* -- the main telemetry analysis with per-trace root cause, error patterns, latency breakdown, and cross-trace correlation
+. *Examined Sources* -- source code snippets linked to analysis findings, rendered as Markdown
+. *Dashboard* -- generated Grafana dashboard definition as JSON
+
+image::images/screenshot-source-examination.png[Source Examination]
+_Source examination correlates analysis findings back to application code_
+
+image::images/screenshot-dashboard-generation.png[Dashboard Generation]
+_Generated Grafana dashboard with JVM, CPU, and application metrics panels_
+
+Each section has a *Copy* button for clipboard export.
+
+== Testing with Chaos Engineering
+
+How do you test an AI-powered analysis tool? You need realistic failure scenarios with known root causes, and you need an objective way to score the analysis quality. Telemetry AI solves this with chaos engineering + LLM-as-judge evaluation.
+
+=== Chaos Scenarios
+
+The companion `app` module exposes 11 chaos types via `GET /chaos?type=\{type}&intensity=\{value}`:
+
+[cols="1,2", options="header"]
+|===
+| Chaos Type | What It Does
+
+| `delay` | Thread.sleep for configurable milliseconds
+| `memory` | Allocate N MB (released after request)
+| `cpu` | CPU burn loop for N ms
+| `leak` | Allocate N MB (never freed)
+| `error` | Random 5xx WebApplicationException
+| `exception` | Unhandled RuntimeException (HTTP 500)
+| `threadpool` | Block 10 threads via CountDownLatch
+| `contention` | 10 threads competing for a synchronized lock
+| `gc` | Rapid alloc/dealloc -> GC pressure
+| `intermittent` | Random failures at configurable rate
+| `deadlock` | Two threads deadlocked on competing locks
+|===
+
+=== Database and Weather Chaos
+
+Beyond application-level chaos, the `ext` module tests infrastructure-level failures using *Toxiproxy* -- a TCP proxy that can inject latency, cut connections, and throttle bandwidth at the network layer:
+
+*Database chaos* routes JDBC connections through Toxiproxy to MySQL:
+
+[mermaid]
+....
+flowchart LR
+App[Ext App] -->|JDBC| Toxi[Toxiproxy\n:33061]
+Toxi -->|JDBC| DB[(MySQL\n:33060)]
+style Toxi fill:#fdd,stroke:#c33
+....
+
+Tests include slow queries (3s latency injection), connection pool exhaustion (4s latency + small pool + concurrent requests), and full database outages (connection cut). JDBC telemetry (`quarkus.datasource.jdbc.telemetry=true`) creates separate database query spans, so the AI sees `GET /poke (3019ms) -> SELECT ... (3015ms)` and can identify database-level root causes.
+
+*Weather chaos* routes REST client calls through Toxiproxy to the Open-Meteo API:
+
+[mermaid]
+....
+flowchart LR
+App[Ext App] -->|REST| Toxi[Toxiproxy\n:8888]
+Toxi -->|REST| API[api.open-meteo.com]
+style Toxi fill:#fdd,stroke:#c33
+....
+
+Tests include slow external API responses and full API outages. REST client instrumentation by `quarkus-opentelemetry` creates spans automatically -- no extra configuration needed.
+
+No application code changes are required for any of these -- chaos is injected purely at the network layer via the Toxiproxy REST API.
+
+=== The Evaluation Mechanism: LLM-as-Judge
+
+Each integration test follows the same pattern:
+
+. *Inject chaos* into the companion app (or do nothing for baseline tests)
+. *Wait* for telemetry to propagate to LGTM
+. *Run analysis* via `GET /analyze/\{n}`
+. *Capture* all tool outputs (raw telemetry data the LLM saw)
+. *Score* the analysis using a separate LLM call
+
+The scoring uses an `AnalysisEvaluationStrategy` that builds a detailed evaluation prompt containing:
+
+* The original telemetry data (traces, logs, metrics) the AI analyzed
+* The system prompt used for analysis
+* The analysis output being evaluated
+* Scenario-specific evaluation criteria
+
+A judge LLM (`EvaluationJudge`) then scores the analysis on four dimensions, each worth 0-25 points:
+
+[cols="1,2", options="header"]
+|===
+| Dimension | What It Measures
+
+| *Completeness*
+| Did it find all the issues present in the telemetry?
+
+| *Accuracy*
+| Are the identified root causes correct?
+
+| *Correlation Quality*
+| Did it properly link traces, logs, and metrics?
+
+| *Actionability*
+| Are the remediation suggestions useful and specific?
+|===
+
+The passing threshold is *70/100*. If the score falls below 0.7, the evaluation also outputs *prompt improvement suggestions* -- concrete changes to the system prompt that would improve analysis quality. This creates a feedback loop: run tests, get scores, improve the prompt, run tests again.
+
+=== Cross-LLM Combinations
+
+A critical design choice is that the *analyzer LLM* and the *scorer LLM* can be different providers. This prevents self-evaluation bias -- an LLM scoring its own output might be systematically lenient.
+
+The test scripts support all combinations:
+
+[source,bash]
+----
+./run-integration-test.sh chaos openai grok     # AI=OpenAI, scorer=Grok
+./run-integration-test.sh chaos grok openai     # AI=Grok, scorer=OpenAI
+./run-integration-test.sh db openai grok        # DB tests, cross-provider
+./run-integration-test.sh weather grok grok     # Weather tests, same provider
+----
+
+All 19 test scenarios pass across provider combinations:
+
+[cols="1,1,1,1,1", options="header"]
+|===
+| AI Provider | Scorer | Chaos | DB | Weather
+
+| OpenAI | Grok | 12/12 | 4/4 | 3/3
+| Grok | OpenAI | 12/12 | 4/4 | 3/3
+| OpenAI | OpenAI | 12/12 | 4/4 | 3/3
+| Grok | Grok | 12/12 | 4/4 | 3/3
+|===
+
+The cross-provider combinations (OpenAI/Grok, Grok/OpenAI) are the most important -- they validate that analysis quality is genuine, not an artifact of one LLM being generous about its own or a peer's output.
+
+== Data Filtering: Staying Within Context Limits
+
+One of the trickiest engineering challenges is keeping telemetry data within LLM context limits while preserving signal. The `StripMcpClient` decorator applies per-tool filtering functions:
+
+* *Traces*: Removes SDK metadata (`telemetry.sdk.*`, `otel.*`), localhost attributes, and instrumentation library details
+* *Logs*: Strips SDK metadata, redundant fields, and duplicate information already present in trace spans
+* *Metrics*: Removes Netty internals, static/constant values, histogram bucket breakdowns, and per-region metric breakdowns -- reducing 586 entries to ~35
+
+The system prompt also instructs the LLM to treat chaos-related log entries as authoritative evidence, even when Prometheus metrics don't confirm them -- because point-in-time metric snapshots can miss transient pressure spikes that logs capture.
+
+== What's Next
+
+Telemetry AI is a https://github.com/quarkiverse/quarkus-telemetry-ai[Quarkiverse project] with the AI module uber-jar published to Maven Central. Current priorities:
+
+* *Anthropic provider* integration
+* *Native image* compilation support
+* *Additional LLM providers* (Gemini and WatsonX integration testing)
+* *Community feedback* on analysis quality and usefulness across different application architectures
+
+The project is designed for extensibility -- adding a new LLM provider is a Maven profile + Quarkus configuration, adding new chaos types is a method in the chaos endpoint, and the evaluation framework automatically validates any changes against the full test matrix.
+
+Try it out: clone the repo, set an API key, run `./dev-ai.sh 8081,8082`, poke some endpoints, and see what the AI finds.
