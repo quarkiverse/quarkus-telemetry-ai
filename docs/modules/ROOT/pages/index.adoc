@@ -9,7 +9,7 @@ Telemetry AI is a Quarkus-based system that uses LLMs to automatically analyze d
 == Architecture
 
 [mermaid]
-....
+----
 flowchart LR
 User[User]
 AI[AI Module]
@@ -39,7 +39,7 @@ style AI fill:#3498db,color:#fff
 style YourApps fill:#f5f5f5,stroke:#2ecc71
 style LGTM fill:#f5f5f5,stroke:#bbb
 style LLMs fill:#f5f5f5,stroke:#bbb
-....
+----
 
 The AI module connects to your existing LGTM stack via MCP and to your running Quarkus applications via Dev MCP (for source examination and dashboard generation). Your applications just need OpenTelemetry instrumentation -- no code changes required.
 
@@ -48,7 +48,7 @@ The AI module is available as an uber-jar on Maven Central (`io.quarkiverse.tele
 == Analysis Pipeline
 
 [mermaid]
-....
+----
 sequenceDiagram
 participant U as User
 participant AI as AI Module
@@ -67,7 +67,7 @@ LGTM-->>Strip: Raw metrics
 Strip-->>LLM: Filtered metrics
 LLM-->>AI: Analysis report
 AI-->>U: HTML / Markdown / Text
-....
+----
 
 == LLM Providers
 

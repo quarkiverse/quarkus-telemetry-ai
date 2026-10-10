@@ -290,6 +290,10 @@ One of the trickiest engineering challenges is keeping telemetry data within LLM
 
 The system prompt also instructs the LLM to treat chaos-related log entries as authoritative evidence, even when Prometheus metrics don't confirm them — because point-in-time metric snapshots can miss transient pressure spikes that logs capture.
 
+## Documentation
+
+Full documentation is available at [docs.quarkiverse.io/quarkus-telemetry-ai](https://docs.quarkiverse.io/quarkus-telemetry-ai/dev/index.html), covering getting started, configuration, and the integration testing framework.
+
 ## What's Next
 
 Telemetry AI is a [Quarkiverse project](https://github.com/quarkiverse/quarkus-telemetry-ai) with the AI module uber-jar published to Maven Central. Current priorities:
